@@ -1,4 +1,10 @@
 #!/usr/bin/env python3
+"""
+Script to make domains in a course grained elastic network.
+Domains are defined by a domdef.dat file.
+
+Written by Matthijs J. Tadema, MSc (2020)
+"""
 from pathlib import Path
 from copy import deepcopy
 import argparse
@@ -29,7 +35,7 @@ class Domain:
         return any(item in subrange for subrange in self.ranges)
 
     def __add__(self, l):
-        "shift all the atom indices by l"
+        "move all the atom indices by l"
         shifted = []
         for (fr, to) in self.segments:
             shifted.append((fr+l, to+l))
@@ -44,7 +50,15 @@ class Domain:
         self.bonds = bonds
         return self
 
-    def shift(self, l, start, end, nshift):
+    def shift(self, l: int, start: int, end: int, nshift: int):
+        """
+        Shift part of the definition by nshift
+        :param l: int, length of the protein
+        :param start: int
+        :param end: int
+        :param nshift: int
+        :return: None
+        """
         shifted = []
         modfix = lambda n: ((n - 1) % l) + 1
         shiftrange = range(start, end+1)
@@ -103,7 +117,12 @@ def parse_range(line):
     return fr, to
 
 
-def parse_domains(domdef: Path):
+def parse_domains(domdef: Path) -> list:
+    """
+    Parse a domdef file and return list of domains.
+    :param domdef: Path
+    :return: list
+    """
     domdef = Path(domdef)
     assert domdef.exists()
     structure = []
@@ -142,21 +161,31 @@ def parse_domains(domdef: Path):
     return structure
 
 
-def extrapolate_domains(structure, l, n, *, start=None, end=None, nshift=0):
+def extrapolate_domains(structure: list, *, length: int, nchains: int, start=None, end=None, nshift=0, **kwargs) -> list:
+    """
+    Extrapolate given domains to [n] domains, give length [l]
+    :param structure: list
+    :param length: int
+    :param nchains: int
+    :param start: int
+    :param end: int
+    :param nshift: int
+    :return: list, new structure
+    """
     if not any(obj is None for obj in (start, end, nshift)):
         for domain in structure:
             # Shift segments and bonds
             # if part of the structure was shifted
-            domain.shift(l, start, end, nshift)
+            domain.shift(length, start, end, nshift)
 
     n_orig_domains = len(structure)
-    for i in range((n-1) * n_orig_domains):
+    for i in range((nchains - 1) * n_orig_domains):
         # Extrapolate domains to several chains
         domain_copy = deepcopy(structure[i])
-        structure.append(domain_copy + l)
+        structure.append(domain_copy + length)
     for domain in structure:
         # Finally wrap the indices around if they exceed mod total length
-        domain.wrap(l, n)
+        domain.wrap(length, nchains)
     return structure
 
 
@@ -174,7 +203,15 @@ def is_exception(domains, fr, to):
     return False
 
 
-def apply_domains(structure, itp_in: Path, itp_out: Path):
+def apply_domains(structure, itp_in: Path, itp_out: Path, **kwargs):
+    """
+    Apply the given domain definitions to an itp file
+    (i.e. trim the elastic network to be only in domains)
+    :param structure: list
+    :param itp_in: Path
+    :param itp_out: Path
+    :return:
+    """
     atom_to_res = {}
     res_to_bb = {}
 
@@ -218,24 +255,30 @@ def apply_domains(structure, itp_in: Path, itp_out: Path):
             fout.write(line)
 
 
-def main(*, domdef, length, nchains, start, end, nshift):
-    length += nshift
+def main(*, domdef, length: int, nchains: int, **kwargs):
     structure = parse_domains(domdef)
-    structure = extrapolate_domains(structure, length, nchains, start=start, end=end, nshift=nshift)
-    itp_in = Path("molecule_0.itp")
-    itp_out = Path("molecule_0_doms.itp")
-    apply_domains(structure, itp_in, itp_out)
+    if not any(obj is None for obj in (length, nchains)):
+        structure = extrapolate_domains(structure, **kwargs)
+    apply_domains(structure, **kwargs)
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("nchains", type=int)
-    parser.add_argument("length", type=int)
-    parser.add_argument("--domdef", type=Path, default="domains.dat",
-                        help="Domain definition")
-    parser.add_argument("--start", type=int)
-    parser.add_argument("--end", type=int)
-    parser.add_argument("--nshift", type=int)
+    files = parser.add_argument_group('files')
+    files.add_argument("--domdef", type=Path, default="domdef.dat",
+                        help="Domain definition (default: domdef.dat)")
+    files.add_argument("--itp-in", "-i", default="molecule_0.itp", type=Path,
+                        help="Input topology (default: molecule_0.itp)")
+    files.add_argument("--itp-out", "-o", default="molecule_0_doms.itp", type=Path,
+                        help="Output topology (default: molecule_0_doms.itp)")
+    extra = parser.add_argument_group('extrapolation')
+    extra.add_argument("--nchains", "-n", type=int, help="Number of (identical) chains in the topology")
+    extra.add_argument("--length", "-l", type=int, help="Length of a single chain")
+    shift = parser.add_argument_group('shift')
+    shift.add_argument("--start", type=int)
+    shift.add_argument("--end", type=int)
+    shift.add_argument("--nshift", type=int, default=0)
+
     args = parser.parse_args()
     assert args.domdef.exists()
     main(**vars(args))
