@@ -8,6 +8,8 @@ Written by Matthijs J. Tadema, MSc (2020)
 from pathlib import Path
 from copy import deepcopy
 import argparse
+import logging
+logging.basicConfig(level=logging.INFO)
 
 
 class Domain:
@@ -139,12 +141,14 @@ def parse_domains(domdef: Path) -> list:
                 n_new_bonds = int(line[2])
             except IndexError:
                 n_new_bonds = 0
-
+            logging.debug(f"{n_segments} segments, {n_exceptions}, {n_new_bonds} new bonds.")
             domain = Domain()
             try:
                 for _ in range(n_segments):
                     line = next(fin)
-                    domain.add_segment(*parse_range(line))
+                    fr, to = parse_range(line)
+                    logging.debug(f"Segment between {fr} {to}")
+                    domain.add_segment(fr, to)
                 for _ in range(n_exceptions):
                     line = next(fin)
                     domain.add_exception(*parse_range(line))
@@ -203,7 +207,7 @@ def is_exception(domains, fr, to):
     return False
 
 
-def apply_domains(structure, itp_in: Path, itp_out: Path, **kwargs):
+def apply_domains(structure, *, itp_in: Path, itp_out: Path, fc: float, **kwargs):
     """
     Apply the given domain definitions to an itp file
     (i.e. trim the elastic network to be only in domains)
@@ -215,6 +219,9 @@ def apply_domains(structure, itp_in: Path, itp_out: Path, **kwargs):
     atom_to_res = {}
     res_to_bb = {}
 
+    counter = 0
+
+    logging.info(f"Writing to {itp_out.name}")
     with open(itp_in) as fin ,\
     open(itp_out, 'w') as fout:
         current_header = ""
@@ -234,11 +241,13 @@ def apply_domains(structure, itp_in: Path, itp_out: Path, **kwargs):
                     fr, to = [atom_to_res[n] for n in (fr, to)]
                     l, f = [float(n) for n in (l, f)]
                     if not is_exception(structure, fr, to):
-                        if f == 1300: # elastic bond force
+                        if f == fc: # elastic bond force
                             if not same_domain(structure, fr, to):
+                                counter += 1
+                                logging.debug(f"Cutting {fr} {to}")
                                 fout.write(";") # comment out offending lines
                     else:
-                        print(f"Exception! {fr} {to}")
+                        logging.debug(f"Found exception! {fr} {to}")
 
             except ValueError:
                 pass # empty lines probably
@@ -253,17 +262,26 @@ def apply_domains(structure, itp_in: Path, itp_out: Path, **kwargs):
                             fout.write(f"{fr} {to} {bt} {l} {f}\n")
                     fout.write("\n")
             fout.write(line)
+    if counter == 0:
+        logging.warning(f"only cut {0} bonds, check domain definitions or fc (was {fc}).")
 
 
 def main(*, domdef, length: int, nchains: int, **kwargs):
+    logging.info("Parsing domains")
     structure = parse_domains(domdef)
     if not any(obj is None for obj in (length, nchains)):
-        structure = extrapolate_domains(structure, **kwargs)
+        logging.info("Extrapolating domains")
+        structure = extrapolate_domains(structure, length=length, nchains=nchains, **kwargs)
+    logging.info("Applying domains")
     apply_domains(structure, **kwargs)
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--verbose", "-v", action="store_true", default=False,
+                        help="Be loud and noisy.")
+    parser.add_argument("--force-constant", "-fc", default=500, type=float, dest="fc",
+                        help="Force constant to detect elastic bonds to cut.")
     files = parser.add_argument_group('files')
     files.add_argument("--domdef", type=Path, default="domdef.dat",
                         help="Domain definition (default: domdef.dat)")
@@ -280,5 +298,9 @@ if __name__ == "__main__":
     shift.add_argument("--nshift", type=int, default=0)
 
     args = parser.parse_args()
+    if args.verbose:
+        logging.getLogger().setLevel(logging.DEBUG)
+        logging.debug("Logging level debug")
     assert args.domdef.exists()
+
     main(**vars(args))
